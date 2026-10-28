@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cassette Groovebox</title>
+  <!-- Load p5.js, p5.sound, and a clean minimal font -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #1a1a1a; display: flex; justify-content: center; align-items: center; height: 100vh; user-select: none; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <script>
+    let audioStarted = false;
+
+    // Dimensions & Layout
+    let cw, ch, scaleF; 
+    let layout = {}; 
+
+    // Interaction states
+    let mouseZone = null;
+    let keyZones = new Set(); // Allows multiple keys to be pressed at once
+    let hoverZone = null;
+    let angleL = 0, angleR = 0;
+    let speedL = 0, speedR = 0;
+    let impactScale = 1.0;
+
+    // Audio Analysis & Generators
+    let analyzer;
+    let saxOsc, saxFilter, knobOsc, polySynth;
+    let drums = {};
+
+    // Keyboard Bindings
+    const KEY_MAP = {
+      '1': 'stripe1', '2': 'stripe2', '3': 'stripe3', '4': 'stripe4', '5': 'label',
+      'q': 'spoolL', 'w': 'spoolR', 'e': 'window',
+      'arrowleft': 'rimLeft', 'arrowdown': 'rimBottom', 'arrowup': 'rimTop', 'arrowright': 'rimRight',
+      ' ': 'indent', // Spacebar
+      't': 'screwTL', 'y': 'screwTR', 'u': 'screwBL', 'i': 'screwBR',
+      'o': 'holeL', 'p': 'holeR'
+    };
+
+    // Prevent default scrolling for Space and Arrow keys
+    window.addEventListener("keydown", function(e) {
+        if(["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].indexOf(e.code) > -1) {
+            e.preventDefault();
+        }
+    }, false);
+
+    function setup() {
+      createCanvas(windowWidth, windowHeight);
+      calculateDimensions();
+      rectMode(CENTER);
+      angleMode(RADIANS);
+      textFont('Inter'); // Apply minimal font
+      
+      analyzer = new p5.Amplitude();
+      analyzer.setInput();
+
+      // --- MELODIC SYNTHS ---
+      saxOsc = new p5.Oscillator('sawtooth');
+      saxFilter = new p5.LowPass(); saxFilter.freq(1200);
+      saxOsc.disconnect(); saxOsc.connect(saxFilter);
+      saxOsc.start(); saxOsc.amp(0);
+      
+      knobOsc = new p5.Oscillator('sine');
+      knobOsc.start(); knobOsc.amp(0);
+      polySynth = new p5.PolySynth();
+
+      // --- DRUM MACHINE ENGINE ---
+      setupDrumEngine();
+    }
+
+    function setupDrumEngine() {
+      drums.kickOsc = new p5.Oscillator('sine');
+      drums.kickOsc.start(); drums.kickOsc.amp(0);
+      drums.kickEnv = new p5.Envelope(0.005, 1.0, 0.2, 0);
+
+      drums.snareOsc = new p5.Oscillator('triangle');
+      drums.snareOsc.start(); drums.snareOsc.amp(0);
+      drums.snareEnv = new p5.Envelope(0.005, 0.8, 0.1, 0);
+      
+      drums.snareNoise = new p5.Noise('white');
+      drums.snareFilter = new p5.HighPass(); drums.snareFilter.freq(2000);
+      drums.snareNoise.disconnect(); drums.snareNoise.connect(drums.snareFilter);
+      drums.snareNoise.start(); drums.snareNoise.amp(0);
+      drums.snareNoiseEnv = new p5.Envelope(0.01, 0.6, 0.2, 0);
+
+      drums.hatNoise = new p5.Noise('white');
+      drums.hatFilter = new p5.BandPass(); drums.hatFilter.freq(8000); drums.hatFilter.res(2);
+      drums.hatNoise.disconnect(); drums.hatNoise.connect(drums.hatFilter);
+      drums.hatNoise.start(); drums.hatNoise.amp(0);
+      drums.hatEnv = new p5.Envelope(0.005, 0.8, 0.05, 0); 
+
+      drums.tomOsc = new p5.Oscillator('triangle');
+      drums.tomOsc.start(); drums.tomOsc.amp(0);
+      drums.tomEnv = new p5.Envelope(0.01, 1.0, 0.3, 0);
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+      calculateDimensions();
+    }
+
+    function calculateDimensions() {
+      cw = min(width * 0.85, 850);
+      ch = cw * 0.625;
+      scaleF = cw / 800; 
+      
+      let rimW = ch * 0.12;
+      layout.rimTop = {x: 0, y: -ch/2 + rimW/2, w: cw, h: rimW};
+      layout.rimBottom = {x: 0, y: ch/2 - rimW/2, w: cw, h: rimW};
+      layout.rimLeft = {x: -cw/2 + rimW/2, y: 0, w: rimW, h: ch - 2*rimW};
+      layout.rimRight = {x: cw/2 - rimW/2, y: 0, w: rimW, h: ch - 2*rimW};
+
+      let labelW = cw * 0.75, labelH = ch * 0.52, labelY = -ch * 0.12, lblH = labelH * 0.35;
+      layout.label = {x: 0, y: labelY - labelH/2 + lblH/2 + 4*scaleF, w: labelW - 16*scaleF, h: lblH};
+
+      let strH = (labelH * 0.6) / 4 - 3*scaleF;
+      let startY = layout.label.y + lblH/2 + strH/2 + 6*scaleF;
+      layout.stripe1 = {x: 0, y: startY, w: labelW - 16*scaleF, h: strH};
+      layout.stripe2 = {x: 0, y: startY + strH + 3*scaleF, w: labelW - 16*scaleF, h: strH};
+      layout.stripe3 = {x: 0, y: startY + (strH + 3*scaleF)*2, w: labelW - 16*scaleF, h: strH};
+      layout.stripe4 = {x: 0, y: startY + (strH + 3*scaleF)*3, w: labelW - 16*scaleF, h: strH};
+
+      layout.window = {x: 0, y: ch*0.06, w: cw*0.48, h: ch*0.25};
+      layout.spoolL = {x: -cw*0.13, y: layout.window.y, d: ch*0.22};
+      layout.spoolR = {x: cw*0.13, y: layout.window.y, d: ch*0.22};
+
+      let indW_T = cw*0.45, indW_B = cw*0.55, indH = ch*0.18, indY = ch/2 - rimW/2; 
+      layout.indent = {
+        y: indY, w: indW_B, h: indH,
+        verts: [
+          {x: -indW_T/2, y: indY - indH/2}, {x: indW_T/2,  y: indY - indH/2},
+          {x: indW_B/2,  y: indY + indH/2}, {x: -indW_B/2, y: indY + indH/2}
+        ]
+      };
+
+      layout.holeL = {x: -cw * 0.25, y: indY, d: 24*scaleF};
+      layout.holeR = {x: cw * 0.25, y: indY, d: 24*scaleF};
+      layout.screwTL = {x: layout.rimLeft.x, y: layout.rimTop.y, d: 20*scaleF};
+      layout.screwTR = {x: layout.rimRight.x, y: layout.rimTop.y, d: 20*scaleF};
+      layout.screwBL = {x: layout.rimLeft.x, y: layout.rimBottom.y, d: 20*scaleF};
+      layout.screwBR = {x: layout.rimRight.x, y: layout.rimBottom.y, d: 20*scaleF};
+    }
+
+    function isPressed(zone) {
+      return mouseZone === zone || keyZones.has(zone);
+    }
+
+    function draw() {
+      background('#1a1a1a');
+
+      // --- 1. UI LAYER (Untranslated) ---
+      drawUI();
+
+      if (!audioStarted) {
+        fill(255); textAlign(CENTER, CENTER); textSize(24 * scaleF);
+        text("Click anywhere to unlock audio context", width/2, height/2);
+        return;
+      }
+
+      // --- 2. CASSETTE LAYER ---
+      push();
+      translate(width/2, height/2);
+
+      let mx = mouseX - width/2;
+      let my = mouseY - height/2;
+      hoverZone = getHitZone(mx, my);
+      cursor(hoverZone ? 'pointer' : 'default');
+
+      scale(impactScale);
+      impactScale = lerp(impactScale, 1.0, 0.15);
+
+      if (isPressed('spoolL')) {
+        speedL = 0.2; saxOsc.freq(map(mouseY, 0, height, 800, 150, true), 0.1);
+      } else speedL *= 0.92;
+
+      if (isPressed('spoolR')) {
+        speedR = 0.2; 
+        knobOsc.freq(map(mouseX, 0, width, 200, 1200, true), 0.1);
+        knobOsc.amp(map(mouseY, 0, height, 0.8, 0, true), 0.1);
+      } else speedR *= 0.92;
+
+      angleL += speedL; angleR += speedR;
+      drawCassette();
+      pop();
+    }
+
+    // Minimal text overlay
+    function drawUI() {
+      push();
+      resetMatrix();
+      
+      // Title
+      fill(255, 200);
+      textAlign(CENTER, TOP);
+      textSize(max(24, 32 * scaleF));
+      textStyle(BOLD);
+      text("CASSETTE GROOVEBOX", width/2, 40);
+      
+      // Legend Styling
+      textSize(max(10, 14 * scaleF));
+      textStyle(NORMAL);
+      fill(255, 100); // Low opacity to not distract
+      let pad = 30;
+      let lh = max(18, 22 * scaleF);
+
+      // Top Left
+      textAlign(LEFT, TOP);
+      text("1-4 : MELODY", pad, pad);
+      text("5 : CHORD", pad, pad + lh);
+
+      // Top Right
+      textAlign(RIGHT, TOP);
+      text("Q, W : SPOOLS", width - pad, pad);
+      text("E : SCRATCH", width - pad, pad + lh);
+
+      // Bottom Left
+      textAlign(LEFT, BOTTOM);
+      text("SPACE : SUB BASS", pad, height - pad);
+      text("ARROWS : DRUMS", pad, height - pad - lh);
+
+      // Bottom Right
+      textAlign(RIGHT, BOTTOM);
+      text("O, P : ZAPS", width - pad, height - pad);
+      text("T, Y, U, I : BEEPS", width - pad, height - pad - lh);
+      
+      pop();
+    }
+
+    // --- DRAWING THE HARDWARE ---
+    function drawPad(z, colStr, obj, r=0) {
+      let pressed = isPressed(z);
+      let isHovered = (hoverZone === z && !pressed);
+      let offset = pressed ? 0 : 5 * scaleF;
+      let baseCol = color(colStr);
+      if (isHovered) baseCol = lerpColor(baseCol, color(255), 0.15); 
+      
+      noStroke(); fill(lerpColor(baseCol, color(0), 0.5));
+      rect(obj.x, obj.y, obj.w, obj.h, r);
+      fill(baseCol); rect(obj.x - offset, obj.y - offset, obj.w, obj.h, r);
+    }
+
+    function drawRoundPad(z, colStr, obj, isScrew=false) {
+      let pressed = isPressed(z);
+      let isHovered = (hoverZone === z && !pressed);
+      let offset = pressed ? 0 : 4 * scaleF;
+      let baseCol = color(colStr);
+      if (isHovered) baseCol = lerpColor(baseCol, color(255), 0.2);
+      
+      noStroke(); fill(lerpColor(baseCol, color(0), 0.5)); circle(obj.x, obj.y, obj.d);
+      fill(baseCol); circle(obj.x - offset, obj.y - offset, obj.d);
+      
+      if (isScrew) {
+         stroke('#111'); strokeWeight(2 * scaleF);
+         let h = obj.d/4;
+         line(obj.x - offset - h, obj.y - offset - h, obj.x - offset + h, obj.y - offset + h);
+         line(obj.x - offset - h, obj.y - offset + h, obj.x - offset + h, obj.y - offset - h);
+      }
+    }
+
+    function drawSpool(z, obj, rotAngle) {
+      let pressed = isPressed(z);
+      let offset = pressed ? 0 : 5 * scaleF;
+      
+      push(); translate(obj.x, obj.y); 
+      noStroke(); fill(0, 150); circle(4*scaleF, 4*scaleF, obj.d); 
+      
+      translate(-offset, -offset); rotate(rotAngle);
+      let baseCol = (hoverZone === z && !pressed) ? color(255) : color('#ececec');
+      fill(baseCol); circle(0, 0, obj.d * 0.95);
+      fill('#c8c8c8'); circle(0, 0, obj.d * 0.55);
+      fill(40);
+      for (let i = 0; i < 6; i++) {
+        push(); rotate((TWO_PI / 6) * i); rect(0, -obj.d*0.32, obj.d*0.12, obj.d*0.2); pop();
+      }
+      fill('#1a1a1a'); circle(0, 0, obj.d * 0.25);
+      pop();
+    }
+
+    function drawTapeWindow(z, obj) {
+      let pressed = isPressed(z);
+      let offset = pressed ? 0 : 3 * scaleF;
+      fill('#050505'); rect(obj.x, obj.y, obj.w, obj.h, 8*scaleF); 
+      
+      push();
+      translate(obj.x - offset, obj.y - offset);
+      fill('#151515'); rect(0, 0, obj.w, obj.h, 8*scaleF); 
+      
+      let level = audioStarted ? analyzer.getLevel() : 0;
+      let meterWidth = map(level, 0, 0.5, 0, obj.w * 0.8, true);
+      
+      fill('#222'); rect(0, 0, obj.w * 0.8, obj.h * 0.3, 5*scaleF); 
+      fill('#ff5555'); rectMode(CORNER);
+      rect(-obj.w * 0.4, -obj.h * 0.15, meterWidth, obj.h * 0.3, 5*scaleF); 
+      pop();
+    }
+
+    function drawCassette() {
+      fill('#202020'); rect(0, 0, cw, ch, 15 * scaleF); 
+
+      drawPad('rimTop', '#2d2d2d', layout.rimTop, 8*scaleF);
+      drawPad('rimBottom', '#2d2d2d', layout.rimBottom, 8*scaleF);
+      drawPad('rimLeft', '#2d2d2d', layout.rimLeft, 0);
+      drawPad('rimRight', '#2d2d2d', layout.rimRight, 0);
+
+      fill('#0a0a0a'); rect(0, -ch*0.12, cw*0.75, ch*0.52, 8*scaleF); 
+      drawPad('label', '#e6e0d4', layout.label, 4*scaleF);
+      drawPad('stripe1', '#e78c45', layout.stripe1, 3*scaleF);
+      drawPad('stripe2', '#75b9be', layout.stripe2, 3*scaleF);
+      drawPad('stripe3', '#e3b156', layout.stripe3, 3*scaleF);
+      drawPad('stripe4', '#d6443c', layout.stripe4, 3*scaleF);
+
+      drawTapeWindow('window', layout.window);
+      drawSpool('spoolL', layout.spoolL, angleL);
+      drawSpool('spoolR', layout.spoolR, angleR);
+
+      let isSubPressed = isPressed('indent');
+      let subOff = isSubPressed ? 0 : 4 * scaleF;
+      let subCol = (hoverZone === 'indent' && !isSubPressed) ? color('#333') : color('#252525');
+      noStroke(); fill(lerpColor(subCol, color(0), 0.5));
+      beginShape(); for(let v of layout.indent.verts) vertex(v.x, v.y); endShape(CLOSE);
+      fill(subCol);
+      beginShape(); for(let v of layout.indent.verts) vertex(v.x - subOff, v.y - subOff); endShape(CLOSE);
+
+      drawRoundPad('holeL', '#181818', layout.holeL);
+      drawRoundPad('holeR', '#181818', layout.holeR);
+      drawRoundPad('screwTL', '#5c5c5c', layout.screwTL, true);
+      drawRoundPad('screwTR', '#5c5c5c', layout.screwTR, true);
+      drawRoundPad('screwBL', '#5c5c5c', layout.screwBL, true);
+      drawRoundPad('screwBR', '#5c5c5c', layout.screwBR, true);
+    }
+
+    // --- INTERACTION ---
+    function inRect(mx, my, rx, ry, rw, rh) { return mx > rx - rw/2 && mx < rx + rw/2 && my > ry - rh/2 && my < ry + rh/2; }
+
+    function getHitZone(mx, my) {
+      let circles = ['spoolL', 'spoolR', 'holeL', 'holeR', 'screwTL', 'screwTR', 'screwBL', 'screwBR'];
+      for (let c of circles) {
+        if (dist(mx, my, layout[c].x, layout[c].y) < layout[c].d / 2) return c;
+      }
+      if (inRect(mx, my, 0, layout.indent.y, layout.indent.w, layout.indent.h)) return 'indent';
+      let rects = ['window', 'stripe1', 'stripe2', 'stripe3', 'stripe4', 'label', 'rimTop', 'rimBottom', 'rimLeft', 'rimRight'];
+      for (let r of rects) {
+        if (inRect(mx, my, layout[r].x, layout[r].y, layout[r].w, layout[r].h)) return r;
+      }
+      return null;
+    }
+
+    // KEYBOARD LOGIC
+    function keyPressed() {
+      if (!audioStarted) { userStartAudio(); audioStarted = true; }
+      let k = key.toLowerCase();
+      if (k === ' ') k = ' '; // Handle spacebar
+      
+      let zone = KEY_MAP[k];
+      if (zone && !keyZones.has(zone)) {
+        keyZones.add(zone);
+        if (zone === 'spoolL') saxOsc.amp(0.6, 0.1);
+        else if (zone === 'spoolR') knobOsc.amp(0.5, 0.1);
+        else {
+          impactScale = 1.03;
+          triggerSound(zone);
+        }
+      }
+    }
+
+    function keyReleased() {
+      let k = key.toLowerCase();
+      if (k === ' ') k = ' ';
+      
+      let zone = KEY_MAP[k];
+      if (zone) {
+        keyZones.delete(zone);
+        if (zone === 'spoolL') saxOsc.amp(0, 0.2);
+        if (zone === 'spoolR') knobOsc.amp(0, 0.2);
+      }
+    }
+
+    // MOUSE LOGIC
+    function mousePressed() {
+      if (!audioStarted) { userStartAudio(); audioStarted = true; }
+      mouseZone = getHitZone(mouseX - width/2, mouseY - height/2);
+
+      if (mouseZone === 'spoolL') saxOsc.amp(0.6, 0.1);
+      else if (mouseZone === 'spoolR') knobOsc.amp(0.5, 0.1);
+      else if (mouseZone) {
+        impactScale = 1.03; 
+        triggerSound(mouseZone);
+      }
+    }
+
+    function mouseReleased() {
+      if (mouseZone === 'spoolL') saxOsc.amp(0, 0.2); 
+      if (mouseZone === 'spoolR') knobOsc.amp(0, 0.2);
+      mouseZone = null;
+    }
+
+    // --- PUNCHY DRUM LOGIC & FX ---
+    function triggerSound(zone) {
+      switch(zone) {
+        case 'stripe1': polySynth.play('C4', 0.8, 0, 0.5); break;
+        case 'stripe2': polySynth.play('Eb4', 0.8, 0, 0.5); break;
+        case 'stripe3': polySynth.play('F4', 0.8, 0, 0.5); break;
+        case 'stripe4': polySynth.play('G4', 0.8, 0, 0.5); break;
+        case 'label':   polySynth.play('C4',0.6,0,1); polySynth.play('G4',0.6,0,1); polySynth.play('C5',0.6,0,1); break;
+        
+        case 'rimBottom': playKick(); break;     
+        case 'rimLeft':   playSnare(); break;     
+        case 'rimTop':    playHiHat(); break;    
+        case 'rimRight':  playTom(150); break;   
+        case 'indent':    playTom(80); break;     
+        
+        case 'window':  playScratch(); break;
+        case 'screwTL': playBeep(1200); break;
+        case 'screwTR': playBeep(1800); break;
+        case 'screwBL': playBeep(800); break;
+        case 'screwBR': playBeep(2400); break;
+        case 'holeL':   playZap(600, 100); break;
+        case 'holeR':   playZap(1200, 200); break;
+      }
+    }
+
+    function playKick() { drums.kickOsc.freq(150); drums.kickOsc.freq(30, 0.15); drums.kickEnv.play(drums.kickOsc); }
+    function playSnare() { drums.snareOsc.freq(250); drums.snareOsc.freq(100, 0.1); drums.snareEnv.play(drums.snareOsc, 0, 0.1); drums.snareNoiseEnv.play(drums.snareNoise, 0, 0.2); }
+    function playHiHat() { drums.hatEnv.play(drums.hatNoise, 0, 0.05); }
+    function playTom(startFreq) { drums.tomOsc.freq(startFreq); drums.tomOsc.freq(startFreq * 0.4, 0.2); drums.tomEnv.play(drums.tomOsc, 0, 0.2); }
+    function playBeep(f) { let o = new p5.Oscillator('square'); o.freq(f); o.start(); let e = new p5.Envelope(0.01,0.1,0,0); e.play(o); setTimeout(()=>o.stop(),200); }
+    function playZap(startF, endF) { let o = new p5.Oscillator('sawtooth'); o.freq(startF); o.freq(endF, 0.2); o.start(); let e = new p5.Envelope(0.01,0.3,0,0); e.play(o); setTimeout(()=>o.stop(),300); }
+    function playScratch() { let n = new p5.Noise('pink'); n.start(); let e = new p5.Envelope(0.01,0.1,0.05,0); e.play(n); setTimeout(()=>n.stop(),200); }
+  </script>
+</body>
+</html>
